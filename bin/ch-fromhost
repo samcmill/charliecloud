@@ -1,5 +1,39 @@
 #!/bin/sh
 
+# The basic algorithm here is that we build up a list of source:destination
+# pairs separated by newlines, then walk through them and copy them into the
+# image.
+#
+# The colon separator to avoid the difficulty of iterating through a sequence
+# of pairs with no arrays or structures in POSIX sh. We could avoid it by
+# taking action immediately upon encountering each file in the argument list,
+# but that would (a) yield a half-injected image for basic errors like
+# misspellings on the command line and (b) would require the image to be first
+# on the command line, which seems awkward.
+#
+# The newline separator is for the same reason and also because it's
+# convenient for input from --cmd and --file.
+#
+# Note on looping through the newlines in a variable: The approach in this
+# script is to set IFS to newline, loop, then restore. This is awkward but
+# seemed the least bad. Alternatives include:
+#
+#   1. Piping echo into "while read -r": This executes the while in a
+#      subshell, so variables don't stick.
+#
+#   2. Here document used as input, e.g.:
+#
+#        while IFS= read -r FILE; do
+#          ...
+#        done <<EOF
+#        $FILES
+#        EOF
+#
+#      This works but seems more awkward.
+#
+#   3. Here string, e.g. 'while IFS= read -r FILE; do ... done <<< "$FILES"'.
+#      This is a bashism.
+
 LIBEXEC="$(cd "$(dirname "$0")" && pwd)"
 . "${LIBEXEC}/base.sh"
 
@@ -11,30 +45,35 @@ Usage:
 
   $ ch-fromhost [OPTION ...] (-c CMD | -f FILE | --nvidia ...) IMGDIR
 
-Which files (one or more required; can be repeated):
+Which files to inject (one or more required; can be repeated):
 
   -c, --cmd CMD    listed in the stdout of CMD
   -f, --file FILE  listed in file FILE
-      --nvidia     recommended by nVidia (via "nvidia-container-cli list")
+  -p, --path PATH  inject the file at PATH
+  --nvidia         recommended by nVidia (via "nvidia-container-cli list")
+
+Destination within image:
+
+  -d, --dest DST   place following files in IMGDIR/DST, overriding inference
 
 Options:
 
-  -d, --dest DST   files whose destination can't be inferred go in IMGDIR/DST
+  --lib-path       print the inferred destination for shared libraries
+  --no-ldconfig    don't run ldconfig even if we injected shared libraries
   -h, --help       print this help and exit
-      --no-infer   don't infer destination for shared libraries and executables
   -v, --verbose    list the injected files
-      --version    print version and exit
+  --version        print version and exit
 EOF
 )
 
-DEST_DEFAULT=
+DEST=
 IMAGE=
-INFER=yes
 NEWLINE='
 '
-FOUND_FILES=
-FOUND_LIBS_P=
+FILES=
 LIB_DEST=
+LIB_DEST_PRINT=
+LIB_FOUND=
 
 debug () {
     if [ "$VERBOSE" ]; then
@@ -55,33 +94,90 @@ info () {
     printf 'ch-fromhost: %s\n' "$1" 1>&2
 }
 
+is_bin () {
+    case $1 in
+        */bin*)
+            return 0
+            ;;
+        *)
+            return 1
+    esac
+}
+
+is_so () {
+    case $1 in
+        */lib*)
+            return 0
+            ;;
+        *.so)
+            return 0
+            ;;
+        *)
+            return 1
+    esac
+}
+
+parse () {
+    OLD_IFS="$IFS"
+    IFS="$NEWLINE"
+    for FILE in $1; do
+        case $FILE in
+            *:*)
+                fatal "paths can't contain colon: $FILE"
+                ;;
+        esac
+        if is_so "$FILE"; then
+            debug "found shared library; will run ldconfig: $FILE"
+            LIB_FOUND=yes
+        fi
+        # This adds a delimiter only for the second and subsequent files.
+        # https://chris-lamb.co.uk/posts/joining-strings-in-posix-shell
+        #
+        # If $DEST empty, we'll infer it later.
+        FILES="${FILES:+$FILES$NEWLINE}$FILE:$DEST"
+    done
+    IFS="$OLD_IFS"
+}
+
+
 parse_basic_args "$@"
 
 while [ $# -gt 0 ]; do
     OPT="$1"; shift
-    OUT=
     case $OPT in
         -c|--cmd)
             ensure_nonempty --cmd "$1"
             OUT=$($1) || fatal "command failed: $1"
+            parse "$OUT"
             shift
             ;;
         -d|--dest)
             ensure_nonempty --dest "$1"
-            DEST_DEFAULT="$1"
+            DEST="$1"
             shift
             ;;
         -f|--file)
             ensure_nonempty --file "$1"
             OUT=$(cat "$1") || fatal "cannot read file: $1"
+            parse "$OUT"
             shift
             ;;
-        --no-infer)
-            INFER=
+        --lib-path)
+            LIB_FOUND=yes
+            LIB_DEST_PRINT=yes
+            ;;
+        --no-ldconfig)
+            NO_LDCONFIG=yes
             ;;
         --nvidia)
-               OUT=$(nvidia-container-cli list --binaries --libraries) \
-            || fatal "nvidia-container-cli failed; does this host have GPUs?"
+            OUT=$(nvidia-container-cli list --binaries --libraries) \
+              || fatal "nvidia-container-cli failed; does this host have GPUs?"
+            parse "$OUT"
+            ;;
+        -p|--path)
+            ensure_nonempty --path "$1"
+            parse "$1"
+            shift
             ;;
         -v|--verbose)
             VERBOSE=yes
@@ -92,81 +188,61 @@ while [ $# -gt 0 ]; do
             ;;
         *)
             ensure_nonempty "image path" "$OPT"
-            [ -z "$IMAGE" ] || fatal "duplicate image path: $OPT"
+            [ -z "$IMAGE" ] || fatal "duplicate image: $OPT"
             [ -d "$OPT" ] || fatal "image not a directory: $OPT"
             IMAGE="$OPT"
             ;;
     esac
-    # This adds a delimiter newline only for the second and subsequent files.
-    # See: https://chris-lamb.co.uk/posts/joining-strings-in-posix-shell
-    FOUND_FILES="${FOUND_FILES:+$FOUND_FILES$NEWLINE}$OUT"
 done
+
+[ "$IMAGE" ] || fatal "no image specified"
+
+if [ $LIB_FOUND ]; then
+    # We want to put the libraries in the first directory that ldconfig
+    # searches, so that we can override (or overwrite) any of the same library
+    # that may already be in the image.
+    debug "asking ldconfig for shared library destination"
+    LIB_DEST=$(  "$CH_BIN"/ch-run "$IMAGE" -- /sbin/ldconfig -Nv 2> /dev/null \
+               | grep -E '^/' | cut -d: -f1 | head -1)
+    [ -z "${LIB_DEST%%/*}" ] || fatal "bad path from ldconfig: $LIB_DEST"
+    debug "shared library destination: $LIB_DEST"
+fi
+
+if [ $LIB_DEST_PRINT ]; then
+    echo "$LIB_DEST"
+    exit 0
+fi
+
+[ "$FILES" ] || fatal "empty file list"
 
 debug "injecting into image: $IMAGE"
 
-# First pass tests if we have any shared libraries in the list. If so, we need
-# to figure out where to put them.
-if [ $INFER ]; then
-    debug "checking for shared libraries"
-    for FILE in $FOUND_FILES; do
-        case $FILE in
-            */lib*)
-                FOUND_LIBS_P=yes
-                break
-                ;;
-        esac
-    done
-    if [ $FOUND_LIBS_P ]; then
-        # We want to put the libraries in the first directory that ldconfig
-        # searches, so that we can override (or overwrite) any of the same
-        # library that may already be in the image.
-        debug "asking ldconfig for shared library path"
-        "$CH_BIN"/ch-run -w "$IMAGE" -- /sbin/ldconfig  # cache maybe absent
-        LIB_DEST=$(  "$CH_BIN"/ch-run "$IMAGE" -- \
-                                      /sbin/ldconfig -v 2> /dev/null \
-                   | grep -E '^/' | cut -d: -f1 | head -1)
-        [ -z "${LIB_DEST%%/*}" ] || fatal "bad path from ldconfig: $LIB_DEST"
-        debug "shared library destination: $LIB_DEST"
-    else
-        debug "no shared libraries found"
-    fi
-fi
-
-debug "injecting"
 OLD_IFS="$IFS"
 IFS="$NEWLINE"
-FOUND_FILE_P=
-for FILE in $FOUND_FILES; do
-    FOUND_FILE_P=yes
-    TYPE_=unk
-    DEST="$DEST_DEFAULT"
-    if [ $INFER ]; then
-        case $FILE in
-            */bin*)
-                TYPE_=bin
-                DEST=/usr/bin
-                ;;
-            */lib*)
-                TYPE_=lib
-                DEST="$LIB_DEST"
-                ;;
-        esac
+for FILE in $FILES; do
+    F="${FILE%%:*}"
+    D="${FILE#*:}"
+    INFER=
+    if is_bin "$F" && [ -z "$D" ]; then
+        D=/usr/bin
+        INFER=" (inferred)"
+    elif is_so "$F" && [ -z "$D" ]; then
+        D=$LIB_DEST
+        INFER=" (inferred)"
     fi
-    debug "  $TYPE_: $FILE -> $DEST"
-    [ "$DEST" ] || fatal "no destination for: $FILE"
-    [ -z "${DEST%%/*}" ] || fatal "not an absolute path: $DEST"
-    [ -d "$IMAGE$DEST" ] || fatal "not a directory: $IMAGE$DEST"
-       cp --dereference --preserve=all "$FILE" "$IMAGE/$DEST" \
-    || fatal "cannot inject: $FILE"
+    debug "  $F -> $D$INFER"
+    [ "$D" ] || fatal "no destination for: $F"
+    [ -z "${D%%/*}" ] || fatal "not an absolute path: $D"
+    [ -d "$IMAGE$D" ] || fatal "not a directory: $IMAGE$D"
+    cp --dereference --preserve=all "$F" "$IMAGE/$D" \
+      || fatal "cannot inject: $F"
 done
 IFS="$OLD_IFS"
 
-[ -z $FOUND_FILE_P ] && fatal "empty file list"
-
-if [ $FOUND_LIBS_P ] && [ $INFER ]; then
-    debug "found shared library, running ldconfig"
+if [ $LIB_FOUND ] && [ -z "$NO_LDCONFIG" ]; then
+    debug "running ldconfig"
     "$CH_BIN"/ch-run -w "$IMAGE" -- /sbin/ldconfig
 else
-    debug "no shared libraries found"
+    debug "not running ldconfig"
 fi
 

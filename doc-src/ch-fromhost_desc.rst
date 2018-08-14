@@ -3,7 +3,7 @@ Synopsis
 
 ::
 
-  $ ch-fromhost [OPTION ...] (-c CMD | -f FILE | --nvidia ...) IMGDIR
+  $ ch-fromhost [OPTION ...] IMGDIR
 
 
 Description
@@ -30,7 +30,7 @@ shared libraries and are placed in the first-priority directory reported by
 
 You can see where shared libraries will go with::
 
-  $ ch-run $IMG -- ldconfig -v 2>/dev/null | egrep '^/' | cut -d: -f1 | head -1
+  $ ch-run $IMG -- ldconfig -Nv 2>/dev/null | egrep '^/' | cut -d: -f1 | head -1
   /usr/local/lib
 
 If any shared libraries are injected, run :code:`ldconfig` inside the
@@ -40,7 +40,8 @@ container (using :code:`ch-run -w`) after injection.
 Options
 =======
 
-To specify which files to inject:
+To specify which files to inject
+--------------------------------
 
   :code:`-c`, :code:`--cmd CMD`
     Inject files listed in the standard output of command :code:`CMD`.
@@ -48,28 +49,40 @@ To specify which files to inject:
   :code:`-f`, :code:`--file FILE`
     Inject files listed in the file :code:`FILE`.
 
+  :code:`-p`, :code:`--path PATH`
+    Inject the file at :code:`PATH`.
+
   :code:`--nvidia`
     Use :code:`nvidia-container-cli list` (from :code:`libnvidia-container`)
     to find executables and libraries to inject.
 
 These can be repeated, and at least one must be specified.
 
-Additional arguments:
+To specify the destination within the image
+-------------------------------------------
 
   :code:`-d`, :code:`--dest DST`
+    Place files specified later in directory :code:`IMGDIR/DST`, overriding the
+    inferred destination if any. If a file's destination cannot be inferred
+    and :code:`--dest` has not been specified, exit with an error. This can be
+    repeated to place files in varying destinations.
 
-    Place files whose destination cannot be inferred in directory
-    :code:`IMGDIR/DST`. If such a file is found and this option is not
-    specified, exit with an error.
+Additional arguments
+--------------------
+
+  :code:`--lib-path`
+    Print the guest destination path for shared libraries inferred as
+    described above.
+
+  :code:`--no-ldconfig`
+    Don't run :code:`ldconfig` even if we appear to have injected shared
+    libraries.
 
   :code:`-h`, :code:`--help`
     Print help and exit.
 
-  :code:`--no-infer`
-    Do not infer the type of any files.
-
   :code:`-v`, :code:`--verbose`
-    Pist the injected files.
+    List the injected files.
 
   :code:`--version`
     Print version and exit.
@@ -106,16 +119,18 @@ script for nVidia GPUs, they would not solve the problem for other situations.
 Bugs
 ====
 
-File paths may not contain newlines.
+File paths may not contain colons or newlines.
 
 
 Examples
 ========
 
 Place shared library :code:`/usr/lib64/libfoo.so` at path
-:code:`/usr/lib/libfoo.so` within the image :code:`/var/tmp/baz` and
-executable :code:`/bin/bar` at path :code:`/usr/bin/bar`. Then, create
-appropriate symlinks to :code:`libfoo` and update the :code:`ld.so` cache.
+:code:`/usr/lib/libfoo.so` (assuming :code:`/usr/lib` is the first directory
+searched by the dynamic loader in the image), within the image
+:code:`/var/tmp/baz` and executable :code:`/bin/bar` at path
+:code:`/usr/bin/bar`. Then, create appropriate symlinks to :code:`libfoo` and
+update the :code:`ld.so` cache.
 
 ::
 
@@ -128,14 +143,19 @@ Same as above::
 
   $ ch-fromhost --cmd 'cat qux.txt' /var/tmp/baz
 
+Same as above::
+
+  $ ch-fromhost --path /bin/bar --path /usr/lib64/libfoo.so /var/tmp/baz
+
+Same as above, but place the files into :code:`/corge` instead (and the shared
+library will not be found by :code:`ldconfig`)::
+
+  $ ch-fromhost --dest /corge --file qux.txt /var/tmp/baz
+
 Same as above, and also place file :code:`/etc/quux` at :code:`/etc/quux`
 within the container::
 
-  $ cat corge.txt
-  /bin/bar
-  /etc/quux
-  /usr/lib64/libfoo.so
-  $ ch-fromhost --file corge.txt --dest /etc /var/tmp/baz
+  $ ch-fromhost --file qux.txt --dest /etc --path /etc/quux /var/tmp/baz
 
 Inject the executables and libraries recommended by nVidia into the image, and
 then run :code:`ldconfig`::
