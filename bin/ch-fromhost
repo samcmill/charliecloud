@@ -75,6 +75,17 @@ LIB_DEST=
 LIB_DEST_PRINT=
 LIB_FOUND=
 
+cray_openmpi_find () {
+    # are we on a cray
+    # is mpicc in $PATH
+    # ensure correct openmpi version
+    # where is host lib path
+    # where is host lib/openmpi path
+    # where is guest lib/openmpi path
+    # get MCA .so
+    # get Cray linked .so's
+}
+
 debug () {
     if [ "$VERBOSE" ]; then
         printf '%s\n' "$1" 1>&2
@@ -150,6 +161,9 @@ while [ $# -gt 0 ]; do
             OUT=$($1) || fatal "command failed: $1"
             parse "$OUT"
             shift
+            ;;
+        --cray-openmpi)
+            parse "$(cray-openmpi-find)"
             ;;
         -d|--dest)
             ensure_nonempty --dest "$1"
