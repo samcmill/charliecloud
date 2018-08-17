@@ -50,6 +50,7 @@ Which files to inject (one or more required; can be repeated):
   -c, --cmd CMD    listed in the stdout of CMD
   -f, --file FILE  listed in file FILE
   -p, --path PATH  inject the file at PATH
+  --cray-openmpi   Cray-enable an OpenMPI installed inside the image
   --nvidia         recommended by nVidia (via "nvidia-container-cli list")
 
 Destination within image:
@@ -66,6 +67,7 @@ Options:
 EOF
 )
 
+CRAY_OPENMPI=
 DEST=
 IMAGE=
 NEWLINE='
@@ -74,17 +76,6 @@ FILES=
 LIB_DEST=
 LIB_DEST_PRINT=
 LIB_FOUND=
-
-cray_openmpi_find () {
-    # are we on a cray
-    # is mpicc in $PATH
-    # ensure correct openmpi version
-    # where is host lib path
-    # where is host lib/openmpi path
-    # where is guest lib/openmpi path
-    # get MCA .so
-    # get Cray linked .so's
-}
 
 debug () {
     if [ "$VERBOSE" ]; then
@@ -131,21 +122,22 @@ is_so () {
 parse () {
     OLD_IFS="$IFS"
     IFS="$NEWLINE"
-    for FILE in $1; do
-        case $FILE in
+    D="${DEST:-$2}"
+    for F in $1; do
+        case $F in
             *:*)
-                fatal "paths can't contain colon: $FILE"
+                fatal "paths can't contain colon: $F"
                 ;;
         esac
-        if is_so "$FILE"; then
-            debug "found shared library; will run ldconfig: $FILE"
+        if is_so "$F"; then
+            debug "found shared library; will run ldconfig: $F"
             LIB_FOUND=yes
         fi
         # This adds a delimiter only for the second and subsequent files.
         # https://chris-lamb.co.uk/posts/joining-strings-in-posix-shell
         #
-        # If $DEST empty, we'll infer it later.
-        FILES="${FILES:+$FILES$NEWLINE}$FILE:$DEST"
+        # If destination empty, we'll infer it later.
+        FILES="${FILES:+$FILES$NEWLINE}$F:$D"
     done
     IFS="$OLD_IFS"
 }
@@ -163,7 +155,8 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --cray-openmpi)
-            parse "$(cray-openmpi-find)"
+            # We can't act right away because we need the image path.
+            CRAY_OPENMPI=yes
             ;;
         -d|--dest)
             ensure_nonempty --dest "$1"
@@ -177,6 +170,9 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --lib-path)
+            # Note: If this is specified along with one of the
+            # file-specification options, all the file gathering and checking
+            # work will happen, but it will be discarded.
             LIB_FOUND=yes
             LIB_DEST_PRINT=yes
             ;;
@@ -210,6 +206,47 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$IMAGE" ] || fatal "no image specified"
+
+if [ $CRAY_OPENMPI ]; then
+    # Are we on a Cray?
+    SENTINEL=/etc/opt/cray/release/cle-release
+    [ -f $SENTINEL ] || fatal "not found: $SENTINEL: are you on a Cray?"
+
+    # Host: Is mpirun in $PATH?
+    command -v mpirun >/dev/null 2>&1 || fatal 'mpirun not in $PATH'
+
+    # Ensure matching OpenMPI versions.
+    HV=$(mpirun --version) \
+      || fatal 'host: mpirun --version failed'
+    HV=$(echo "$HV" | head -1 | sed -E 's|^.+ ([0-9.]+)$|\1|')
+    GV=$(ch-run "$IMAGE" -- mpirun --version) \
+      || fatal 'guest: mpirun --version failed'
+    GV=$(echo "$GV" | head -1 | sed -E 's|^.+ ([0-9.]+)$|\1|')
+    [ "$HV" = "$GV" ] || fatal "host OpenMPI ($HV) differs from guest ($GV)"
+
+    # Where are lib/openmpi?
+    HOST_LIB_OPENMPI=$(  command -v mpirun \
+                       | sed -E 's|bin/mpirun$|lib/openmpi|')
+    [ "$HOST_LIB_OPENMPI" ] || fatal "host: can't find MCA plugin directory"
+    debug "host MCA plugin directory: $HOST_LIB_OPENMPI"
+    GUEST_LIB_OPENMPI=$( ch-run "$IMAGE" -- sh -c 'command -v mpirun' \
+                       | sed -E 's|bin/mpirun$|lib/openmpi|')
+    [ "$GUEST_LIB_OPENMPI" ] || fatal "guest: can't find MCA plugin directory"
+    debug "guest MCA plugin directory: $GUEST_LIB_OPENMPI"
+
+    # Note that OpenMPI shared libraries contain a now-erroneous RUNPATH, but
+    # the dependencies will still be found in their new location.
+
+    # We need the MCA plugins UGNI (for Aries) and Vader (for XPMEM CMA).
+    # These go in the guest's plugin directory.
+    parse "$HOST_LIB_OPENMPI/mca_btl_ugni.so" "$GUEST_LIB_OPENMPI"
+    parse "$HOST_LIB_OPENMPI/mca_btl_vader.so" "$GUEST_LIB_OPENMPI"
+
+    # Dependencies for above. Perhaps in the future these won't be hard-coded.
+    parse "$HOST_LIB_OPENMPI/../libmca_common_ugni.so"
+    parse /opt/cray/ugni/default/lib64/libugni.so.0
+    parse /opt/cray/xpmem/default/lib64/libxpmem.so
+fi
 
 if [ $LIB_FOUND ]; then
     # We want to put the libraries in the first directory that ldconfig
