@@ -243,7 +243,11 @@ if [ $CRAY_OPENMPI ]; then
     # XPMEM CMA
     parse "$HOST_LIB_OPENMPI/mca_btl_vader.so" "$GUEST_LIB_OPENMPI"
     # Authentication tokens to use Aries.
+    parse "$HOST_LIB_OPENMPI/mca_ess_alps.so" "$GUEST_LIB_OPENMPI"
+    parse "$HOST_LIB_OPENMPI/mca_odls_alps.so" "$GUEST_LIB_OPENMPI"
+    parse "$HOST_LIB_OPENMPI/mca_oob_alps.so" "$GUEST_LIB_OPENMPI"
     parse "$HOST_LIB_OPENMPI/mca_plm_alps.so" "$GUEST_LIB_OPENMPI"
+    parse "$HOST_LIB_OPENMPI/mca_ras_alps.so" "$GUEST_LIB_OPENMPI"
 
     # Dependencies for above. Perhaps in the future these won't be hard-coded.
     parse "$HOST_LIB_OPENMPI/../libmca_common_ugni.so"
