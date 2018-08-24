@@ -237,15 +237,22 @@ if [ $CRAY_OPENMPI ]; then
     # Note that OpenMPI shared libraries contain a now-erroneous RUNPATH, but
     # the dependencies will still be found in their new location.
 
-    # We need the MCA plugins UGNI (for Aries) and Vader (for XPMEM CMA).
-    # These go in the guest's plugin directory.
+    # MCA plugins we need. These go in the guest's plugin directory.
+    # Aries network
     parse "$HOST_LIB_OPENMPI/mca_btl_ugni.so" "$GUEST_LIB_OPENMPI"
+    # XPMEM CMA
     parse "$HOST_LIB_OPENMPI/mca_btl_vader.so" "$GUEST_LIB_OPENMPI"
+    # Authentication tokens to use Aries.
+    parse "$HOST_LIB_OPENMPI/mca_plm_alps.so" "$GUEST_LIB_OPENMPI"
 
     # Dependencies for above. Perhaps in the future these won't be hard-coded.
     parse "$HOST_LIB_OPENMPI/../libmca_common_ugni.so"
     parse /opt/cray/ugni/default/lib64/libugni.so.0
     parse /opt/cray/xpmem/default/lib64/libxpmem.so
+    parse "$HOST_LIB_OPENMPI/../libmca_common_alps.so"
+    parse /opt/cray/alps/default/lib64/libalpslli.so
+    parse /opt/cray/alps/default/lib64/libalpsutil.so
+    parse /opt/cray/wlm_detect/default/lib64/libwlm_detect.so
 fi
 
 if [ $LIB_FOUND ]; then
