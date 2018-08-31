@@ -1,7 +1,7 @@
 load ../../../test/common
 
-# Note: If you get output like the following (piping through cat turns of BATS
-# terminal magic):
+# Note: If you get output like the following (piping through cat turns off
+# BATS terminal magic):
 #
 #  $ ./bats ../examples/spark/test.bats | cat
 #  1..5
@@ -11,9 +11,7 @@ load ../../../test/common
 #  [...]/test/bats.src/libexec/bats-exec-test: line 329: /tmp/bats.92406.src: No such file or directory
 #  [...]/test/bats.src/libexec/bats-exec-test: line 329: /tmp/bats.92406.src: No such file or directory
 #
-# that means that mpirun is starting too many processes per node (you want 1).
-# One solution is to export OMPI_MCA_rmaps_base_mapping_policy= (i.e., set but
-# empty).
+# that means that you are starting too many processes per node (you want 1).
 
 setup () {
     scope standard
@@ -31,14 +29,8 @@ setup () {
                     | grep -F 'scope global' \
                     | tail -1 \
                     | sed -r 's/^.+inet ([0-9.]+).+/\1/')
-        # Spark workers require "mpirun". See issue #156.
-        command -v mpirun >/dev/null 2>&1 || skip "mpirun not in path"
-        PERNODE='mpirun -pernode'
-        PERNODE_PIDFILE=/tmp/spark-pernode.pid
     else
         MASTER_IP=127.0.0.1
-        PERNODE=
-        PERNODE_PIDFILE=
     fi
     MASTER_URL="spark://$MASTER_IP:7077"
     MASTER_LOG="$SPARK_LOG/*master.Master*.out"
@@ -76,12 +68,15 @@ EOF
     cat $MASTER_LOG
     # shellcheck disable=SC2086
     grep -Fq 'New state: ALIVE' $MASTER_LOG
-    # start the workers
-    # shellcheck disable=SC2086
-    $PERNODE ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- \
-                   /spark/sbin/start-slave.sh "$MASTER_URL" &
-    if [[ -n $PERNODE ]]; then
-        echo $! > "$PERNODE_PIDFILE"
+    # start the workers (see issue #230)
+    if [[ $CHTEST_MULTINODE ]]; then
+        srun -n1 -c1 --mem=1K \
+             sh -c "   ch-run -b '$SPARK_CONFIG' '$SPARK_IMG' -- \
+                              /spark/sbin/start-slave.sh '$MASTER_URL' \
+                    && (sleep infinity || true)" &
+    else
+        ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- \
+               /spark/sbin/start-slave.sh "$MASTER_URL"
     fi
     sleep 7
 }
@@ -93,15 +88,15 @@ EOF
     # is an artifact of SPARK_LOCAL_IP=127.0.0.1 above, which AFAICT just
     # tells the workers to put their web interfaces on localhost. They still
     # connect to the master and get work OK.
-    [[ -z $CHTEST_MULTINODE ]] && SLURM_NNODES=1
+    #
     # shellcheck disable=SC2086
     worker_ct=$(grep -Fc 'Registering worker' $MASTER_LOG || true)
-    echo "node count: $SLURM_NNODES; worker count: $worker_ct"
-    [[ $worker_ct -eq "$SLURM_NNODES" ]]
+    echo "node count: $CHTEST_NODES; worker count: $worker_ct"
+    [[ $worker_ct -eq "$CHTEST_NODES" ]]
 }
 
 @test "$EXAMPLE_TAG/pi" {
-   run ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- \
+    run ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- \
                /spark/bin/spark-submit --master "$MASTER_URL" \
                /spark/examples/src/main/python/pi.py 64
     echo "$output"
@@ -112,21 +107,20 @@ EOF
 }
 
 @test "$EXAMPLE_TAG/stop" {
-    # If the workers were started with mpirun, we have to kill that prior
-    # mpirun before the next one will do anything. Further, we have to abuse
-    # it with SIGKILL because it doesn't quit on SIGTERM. Even further, this
-    # kills all the processes started by mpirun too -- except on the node
-    # where we ran mpirun.
-    if [[ -n $CHTEST_MULTINODE ]]; then
-        kill -9 "$(cat "$PERNODE_PIDFILE")"
-    fi
-    ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- /spark/sbin/stop-slave.sh
+    # shellcheck disable=SC2086
+    $MPIRUN_NODE ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- \
+                        /spark/sbin/stop-slave.sh
     ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- /spark/sbin/stop-master.sh
     sleep 2
-    # Any Spark processes left?
-    # (Use egrep instead of fgrep so we don't match the grep process.)
+    # Crazy srun workaround pipeline needs to be manually killed (issue #230).
+    if [[ -n $CHTEST_MULTINODE ]]; then
+        # shellcheck disable=SC2086
+        $MPIRUN_NODE pkill -fx 'sleep infinity'
+    fi
+    # Any Spark processes left? (Use egrep instead of fgrep so we don't match
+    # the grep process.)
     # shellcheck disable=SC2086
-    $PERNODE ps aux | ( ! grep -E '[o]rg\.apache\.spark\.deploy' )
+    $MPIRUN_NODE ps aux | ( ! grep -E '[o]rg\.apache\.spark\.deploy' )
 }
 
 @test "$EXAMPLE_TAG/hang" {
