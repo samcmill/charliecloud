@@ -1,7 +1,7 @@
 load ../../../test/common
 
-# Note: If you get output like the following (piping through cat turns off
-# BATS terminal magic):
+# Note: If you get output like the following (piping through cat turns of BATS
+# terminal magic):
 #
 #  $ ./bats ../examples/spark/test.bats | cat
 #  1..5
@@ -31,13 +31,14 @@ setup () {
                     | grep -F 'scope global' \
                     | tail -1 \
                     | sed -r 's/^.+inet ([0-9.]+).+/\1/')
-        # Start Spark workers using pdsh. We would really prefer to do this
-        # using srun, but that doesn't work; see issue #230.
-        command -v pdsh >/dev/null 2>&1 || skip "pdsh not in path"
-        PERNODE="pdsh -R ssh -w $SLURM_NODELIST -- PATH='$PATH'"
+        # Spark workers require "mpirun". See issue #156.
+        command -v mpirun >/dev/null 2>&1 || skip "mpirun not in path"
+        PERNODE='mpirun -pernode'
+        PERNODE_PIDFILE=/tmp/spark-pernode.pid
     else
         MASTER_IP=127.0.0.1
         PERNODE=
+        PERNODE_PIDFILE=
     fi
     MASTER_URL="spark://$MASTER_IP:7077"
     MASTER_LOG="$SPARK_LOG/*master.Master*.out"
@@ -78,7 +79,10 @@ EOF
     # start the workers
     # shellcheck disable=SC2086
     $PERNODE ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- \
-                    /spark/sbin/start-slave.sh "$MASTER_URL"
+                   /spark/sbin/start-slave.sh "$MASTER_URL" &
+    if [[ -n $PERNODE ]]; then
+        echo $! > "$PERNODE_PIDFILE"
+    fi
     sleep 7
 }
 
@@ -97,7 +101,7 @@ EOF
 }
 
 @test "$EXAMPLE_TAG/pi" {
-    run ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- \
+   run ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- \
                /spark/bin/spark-submit --master "$MASTER_URL" \
                /spark/examples/src/main/python/pi.py 64
     echo "$output"
@@ -108,7 +112,15 @@ EOF
 }
 
 @test "$EXAMPLE_TAG/stop" {
-    $PERNODE ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- /spark/sbin/stop-slave.sh
+    # If the workers were started with mpirun, we have to kill that prior
+    # mpirun before the next one will do anything. Further, we have to abuse
+    # it with SIGKILL because it doesn't quit on SIGTERM. Even further, this
+    # kills all the processes started by mpirun too -- except on the node
+    # where we ran mpirun.
+    if [[ -n $CHTEST_MULTINODE ]]; then
+        kill -9 "$(cat "$PERNODE_PIDFILE")"
+    fi
+    ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- /spark/sbin/stop-slave.sh
     ch-run -b "$SPARK_CONFIG" "$SPARK_IMG" -- /spark/sbin/stop-master.sh
     sleep 2
     # Any Spark processes left?
