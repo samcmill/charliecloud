@@ -541,3 +541,28 @@ you do this immediately after the above, you'll need to remove the
   hello
 
 We are working on usability enhancements for this process.
+
+My container has my host environment, how can I use the environment specified in my Dockerfile?
+-----------------------------------------------------------------------------------------------
+
+code:`ch-docker2tar` includes a POSIX sh script, code:`docker-env.sh`, at the container root 
+directory that will add (or update existing)  environment variables declared with the ENV 
+directive in the image Dockerfile.
+
+::
+
+$ ch-docker2tar $image /var/tmp
+$ ch-tar2dir /var/tmp/${image}.tar.gz /var/tmp
+$ ch-run -- /bin/sh
+$ ./docker-env.sh
+
+You may also opt to use the Docker environment exclusivley. Simply open a clean shell
+before executing the script:
+
+::
+
+$ ch-docker2tar $image /var/tmp
+$ ch-tar2dir /var/tmp/${image}.tar.gz /var/tmp
+$ ch-run -- /bin/sh
+$ env -i --noprofile --norc
+$ source /docker-env.sh

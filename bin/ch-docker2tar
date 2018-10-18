@@ -23,11 +23,34 @@ fi
 
 image=$1
 outdir=$2
-tar="$outdir"/$(echo "$image" | sed 's/\//./g').tar.gz
-
+tar="$outdir"/$(echo "$image" | sed 's/\//./g').tar
 cid=$(docker_ create --read-only "$image")
 size=$(docker_ image inspect "$image" --format='{{.Size}}')
-#docker_ ps -af "id=$cid"
-docker_ export "$cid" | pv_ -s "$size" | gzip_ -6 > "$tar"
+
+docker_ ps -af "id=$cid"
+docker_ export "$cid" | pv_ -s "$size" > "$tar"
 docker_ rm "$cid" > /dev/null
-ls -lh "$tar"
+
+cd /tmp || exit 1
+echo "#!/bin/sh" > docker-env.sh
+echo "export HOSTPATH=$PATH" >> docker-env.sh
+
+# Remove brackets, count the number of fields, and prepend export to each
+# field.
+d_env=$(docker_ image inspect "$image" --format='{{.ContainerConfig.Env}}' | sed 's/\[//' | sed 's/\]//')
+nf=$(echo "$d_env" | awk -F " " '{ print NF }')
+i=1
+while [ "$i" -le "$nf" ]; do
+    echo "export $(echo "$d_env" | awk -v field=$i -F " " '{ print $field }')" >> docker-env.sh
+    i=$((i + 1))        
+done
+chmod 775 docker-env.sh
+
+#tar cf docker_env.tar docker-env.sh*
+#tar --concatenate --file="$tar" docker_env.tar
+tar -rf $tar docker-env.sh
+rm -f --one-file-system docker-env.sh
+#rm -f --one-file-system docker-env.sh docker_env.tar
+
+gzip_ -f "$tar"
+ls -lh "$tar.gz"
