@@ -23,7 +23,7 @@ tar czf $RPMBUILD/SOURCES/charliecloud-"${VERSION}".tar.gz \
     .
 
 cp packaging/redhat/charliecloud.spec $RPMBUILD/SPECS
-sed -i "s#Version: @VERSION@#Version: ${VERSION}#g" $RPMBUILD/SPECS/charliecloud.spec
+sed -i "s#@VERSION@#${VERSION}#g" $RPMBUILD/SPECS/charliecloud.spec
 
 # This is handled automatically on Red Hat systems.
 sed -i "s#Release: %{?dist}#Release: 1#g" ~/rpmbuild/SPECS/charliecloud.spec

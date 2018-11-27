@@ -1,6 +1,6 @@
 Name:       charliecloud
 Version:    @VERSION@
-Release:    1%{?dist}
+Release:    %{?dist}
 Summary:    Lightweight user-defined software stacks for high-performance computing
 
 Group:      System Environment/Base
