@@ -13,8 +13,9 @@
 
 #include "charliecloud.h"
 
-
 /** Constants and macros **/
+
+#define BUFF_SIZE 4096
 
 /* Environment variables used by --join parameters. */
 char *JOIN_CT_ENV[] =  { "OMPI_COMM_WORLD_LOCAL_SIZE",
@@ -51,6 +52,8 @@ const struct argp_option options[] = {
    { "join-tag",     -4, "TAG", 0, "label for peer group (implies --join)" },
    { "no-home",      -2, 0,     0, "do not bind-mount your home directory"},
    { "private-tmp", 't', 0,     0, "use container-private /tmp" },
+   { "set-env",      -6, "FILE", 0, 
+     "set additional environment variables from FILE in container"},
    { "uid",         'u', "UID", 0, "run as UID within container" },
    { "verbose",     'v', 0,     0, "be more verbose (debug if repeated)" },
    { "version",     'V', 0,     0, "print version and exit" },
@@ -77,7 +80,7 @@ void privs_verify_invoking();
 /** Global variables **/
 
 const struct argp argp = { options, parse_opt, args_doc, usage };
-
+extern char **environ;
 
 /** Main **/
 
@@ -252,7 +255,11 @@ int parse_int(char *s, bool extra_ok, char *error_tag)
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
 {
    struct args *args = state->input;
+   char buf[BUFF_SIZE];
+   FILE *fp = NULL;
    int i;
+   char *name  = NULL;   // variable name
+   char *value = NULL;   // variable value
 
    switch (key) {
    case -2: // --private-home
@@ -268,6 +275,24 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
       break;
    case -5: // --join-pid
       args->c.join_pid = parse_int(arg, false, "--join-pid");
+      break;
+   case -6: // set-env
+      Tf (fp = fopen(arg, "r"), "--set-env: failed to open %s", arg);
+      while (fgets(buf, sizeof(buf), fp) != NULL) {
+         buf[strlen(buf)-1] = '\0'; // strip newline added by fgets()
+         name = strdup(buf);
+         name = strsep(&name, "=");
+
+         // ensure strsep encountered the seperator
+         Tf (strlen(name) < strlen(buf), "--set-env: invalid key value format: %s", buf);
+
+         // assign to value all characters right of the seperator
+         T_ (value = malloc(sizeof(char) * (strlen(buf) - strlen(name))));
+         value=strncpy(buf, buf + strlen(name) + 1, strlen(buf));
+
+         // preserve existing environment variablesby passing 0 to setenv
+         Zf (setenv(name, value, 0), "failed to set %s with value %s", name, value);
+      }
       break;
    case 'c':
       args->initial_dir = arg;

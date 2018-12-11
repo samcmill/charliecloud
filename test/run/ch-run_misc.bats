@@ -277,6 +277,55 @@ EOF
     [[ $output = *"can't bind: not found: ${ch_timg}/goops"* ]]
 }
 
+@test 'ch-run --set-env' {
+    scope quick
+
+    # Create environment variable file for ch-run
+    f="${BATS_TMPDIR}/env.txt"
+    cat << EOF > "$f"
+TEST_A=foo
+TEST_B=foo=bar
+TEST_C= fizz buzz fizzbuzz
+TEST_A=''
+EOF
+
+    # Create expected output file
+    out="${BATS_TMPDIR}/output.txt"
+    cat << EOF > "$out"
+TEST_A=foo
+TEST_B=foo=bar
+TEST_C= fizz buzz fizzbuzz
+EOF
+
+    # Set environment variables with ch-run and test output
+    ch_env="${BATS_TMPDIR}/ch-env.txt"
+    ch-run --set-env="$f" "$ch_timg" -- env | grep '^TEST' > "$ch_env"
+    diff "$out" "$ch_env"
+    echo "$output"
+    [[ -z $output ]]
+    rm -r "$f" "$out" "$ch_env"
+}
+
+@test 'ch-run --set-env errors' {
+    scope quick
+
+    # file does not exist
+    run ch-run --set-env="$RANDOM" "$ch_timg" -- /bin/true
+    echo "$output"
+    [[ $output = *'--set-env: failed to open'* ]]
+
+    # invalid key value pair; missing '='
+    f="${BATS_TMPDIR}/bad_env.txt"
+    cat << EOF > "$f"
+INVALID value
+EOF
+    run ch-run --set-env="$f" "ch_timg" -- /bin/true
+    echo "$output"
+    [[ $output = *'--set-env: invalid key value format'* ]]
+
+    # 
+}
+
 @test 'broken image errors' {
     scope standard
     img="${BATS_TMPDIR}/broken-image"
